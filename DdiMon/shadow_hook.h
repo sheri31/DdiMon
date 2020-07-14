@@ -19,6 +19,10 @@
 //
 // constants and macros
 //
+#define EXPORT_FUNCTION (true)
+#define UNEXPORT_FUNCTION (false)
+
+
 
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -29,14 +33,21 @@ struct EptData;
 struct ShadowHookData;
 struct SharedShadowHookData;
 
+// A callback type for g_ddimonp_hook_targets
+using ShadowHookTargetInitCallbackType = bool(*)(
+    ULONG64 *ptarget_address);
+
 // Expresses where to install hooks by a function name, and its handlers
 struct ShadowHookTarget {
-  UNICODE_STRING target_name;  // An export name to hook
-  void* handler;               // An address of a hook handler
+    bool export_function;
+    UNICODE_STRING target_name;  // An exported name to hook
+    ULONG64 target_address;  //An unexported function address to hook
+    ShadowHookTargetInitCallbackType target_init_callback; // only for unexported function which need to be located
+    void *handler;               // An address of a hook handler
 
-  // An address of a trampoline code to call original function. Initialized by
-  // a successful call of ShInstallHook().
-  void* original_call;
+    // An address of a trampoline code to call original function. Initialized by
+    // a successful call of ShInstallHook().
+    void *original_call;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -45,31 +56,31 @@ struct ShadowHookTarget {
 //
 
 _IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C
-    ShadowHookData* ShAllocateShadowHookData();
+ShadowHookData* ShAllocateShadowHookData();
 
 _IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C
-    void ShFreeShadowHookData(_In_ ShadowHookData* sh_data);
+void ShFreeShadowHookData(_In_ ShadowHookData* sh_data);
 
 _IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C
-    SharedShadowHookData* ShAllocateSharedShaowHookData();
+SharedShadowHookData* ShAllocateSharedShaowHookData();
 
 _IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C
-    void ShFreeSharedShadowHookData(_In_ SharedShadowHookData* shared_sh_data);
+void ShFreeSharedShadowHookData(_In_ SharedShadowHookData* shared_sh_data);
 
 _IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C NTSTATUS ShEnableHooks();
 
 _IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C NTSTATUS ShDisableHooks();
 
 _IRQL_requires_min_(DISPATCH_LEVEL) NTSTATUS
-    ShEnablePageShadowing(_In_ EptData* ept_data,
-                          _In_ const SharedShadowHookData* shared_sh_data);
+ShEnablePageShadowing(_In_ EptData* ept_data,
+    _In_ const SharedShadowHookData* shared_sh_data);
 
 _IRQL_requires_min_(DISPATCH_LEVEL) void ShVmCallDisablePageShadowing(
     _In_ EptData* ept_data, _In_ const SharedShadowHookData* shared_sh_data);
 
 _IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C
-    bool ShInstallHook(_In_ SharedShadowHookData* shared_sh_data,
-                       _In_ void* address, _In_ ShadowHookTarget* target);
+bool ShInstallHook(_In_ SharedShadowHookData* shared_sh_data,
+    _In_ void* address, _In_ ShadowHookTarget *ShadowHookTarget);
 
 _IRQL_requires_min_(DISPATCH_LEVEL) bool ShHandleBreakpoint(
     _In_ ShadowHookData* sh_data,

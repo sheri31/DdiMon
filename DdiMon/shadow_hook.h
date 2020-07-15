@@ -19,10 +19,11 @@
 //
 // constants and macros
 //
-#define EXPORT_FUNCTION (true)
-#define UNEXPORT_FUNCTION (false)
 
-
+enum HOOKED_FUNC_TYPE{
+    UNEXPORT_FUNCTION,
+    EXPORT_FUNCTION,
+};
 
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -31,15 +32,26 @@
 
 struct EptData;
 struct ShadowHookData;
-struct SharedShadowHookData;
+struct SharedShadowHookPatchData;
 
 // A callback type for g_ddimonp_hook_targets
 using ShadowHookTargetInitCallbackType = bool(*)(
     ULONG64 *ptarget_address);
 
-// Expresses where to install hooks by a function name, and its handlers
+
+// Expresses where to patch by a function name or function address
+struct ShadowPatchTarget {
+    HOOKED_FUNC_TYPE function_type;
+    UNICODE_STRING target_name;  // An exported name to hook
+    ULONG64 target_address;  //An unexported function address to patch
+    ULONG64 patch_length;
+    UCHAR new_code[0x100]; //
+    ShadowHookTargetInitCallbackType target_init_callback; // only for unexported function which need to be located
+};
+
+// Expresses where to install hooks by a function name or function address, and its handlers
 struct ShadowHookTarget {
-    bool export_function;
+    HOOKED_FUNC_TYPE function_type;
     UNICODE_STRING target_name;  // An exported name to hook
     ULONG64 target_address;  //An unexported function address to hook
     ShadowHookTargetInitCallbackType target_init_callback; // only for unexported function which need to be located
@@ -62,10 +74,10 @@ _IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C
 void ShFreeShadowHookData(_In_ ShadowHookData* sh_data);
 
 _IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C
-SharedShadowHookData* ShAllocateSharedShaowHookData();
+SharedShadowHookPatchData* ShAllocateSharedShaowHookData();
 
 _IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C
-void ShFreeSharedShadowHookData(_In_ SharedShadowHookData* shared_sh_data);
+void ShFreeSharedShadowHookData(_In_ SharedShadowHookPatchData* shared_sh_data);
 
 _IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C NTSTATUS ShEnableHooks();
 
@@ -73,26 +85,30 @@ _IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C NTSTATUS ShDisableHooks();
 
 _IRQL_requires_min_(DISPATCH_LEVEL) NTSTATUS
 ShEnablePageShadowing(_In_ EptData* ept_data,
-    _In_ const SharedShadowHookData* shared_sh_data);
+    _In_ const SharedShadowHookPatchData* shared_sh_data);
 
 _IRQL_requires_min_(DISPATCH_LEVEL) void ShVmCallDisablePageShadowing(
-    _In_ EptData* ept_data, _In_ const SharedShadowHookData* shared_sh_data);
+    _In_ EptData* ept_data, _In_ const SharedShadowHookPatchData* shared_sh_data);
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+bool ShInstallPatch(_In_ SharedShadowHookPatchData* shared_sh_data,
+    _In_ void* address, _In_ ShadowPatchTarget *ShadowPatchTarget);
 
 _IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C
-bool ShInstallHook(_In_ SharedShadowHookData* shared_sh_data,
+bool ShInstallHook(_In_ SharedShadowHookPatchData* shared_sh_data,
     _In_ void* address, _In_ ShadowHookTarget *ShadowHookTarget);
 
 _IRQL_requires_min_(DISPATCH_LEVEL) bool ShHandleBreakpoint(
     _In_ ShadowHookData* sh_data,
-    _In_ const SharedShadowHookData* shared_sh_data, _In_ void* guest_ip);
+    _In_ const SharedShadowHookPatchData* shared_sh_data, _In_ void* guest_ip);
 
 _IRQL_requires_min_(DISPATCH_LEVEL) void ShHandleMonitorTrapFlag(
     _In_ ShadowHookData* sh_data,
-    _In_ const SharedShadowHookData* shared_sh_data, _In_ EptData* ept_data);
+    _In_ const SharedShadowHookPatchData* shared_sh_data, _In_ EptData* ept_data);
 
 _IRQL_requires_min_(DISPATCH_LEVEL) void ShHandleEptViolation(
     _In_ ShadowHookData* sh_data,
-    _In_ const SharedShadowHookData* shared_sh_data, _In_ EptData* ept_data,
+    _In_ const SharedShadowHookPatchData* shared_sh_data, _In_ EptData* ept_data,
     _In_ void* fault_va);
 
 ////////////////////////////////////////////////////////////////////////////////

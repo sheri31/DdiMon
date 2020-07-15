@@ -25,7 +25,7 @@
 // types
 //
 
-struct SharedShadowHookData;
+struct SharedShadowHookPatchData;
 
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -33,7 +33,7 @@ struct SharedShadowHookData;
 //
 
 _IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C NTSTATUS
-    DdimonInitialization(_In_ SharedShadowHookData* shared_sh_data);
+    DdimonInitialization(_In_ SharedShadowHookPatchData* shared_sh_data);
 
 _IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C void DdimonTermination();
 

@@ -31,7 +31,7 @@ enum HOOKED_FUNC_TYPE{
 //
 
 struct EptData;
-struct ShadowHookData;
+struct LastShadowHookData;
 struct SharedShadowHookPatchData;
 
 // A callback type for g_ddimonp_hook_targets
@@ -44,7 +44,7 @@ struct ShadowPatchTarget {
     HOOKED_FUNC_TYPE function_type;
     UNICODE_STRING target_name;  // An exported name to hook
     ULONG64 target_address;  //An unexported function address to patch
-    ULONG64 patch_length;
+    ULONG64 patch_length;  
     UCHAR new_code[0x100]; //
     ShadowHookTargetInitCallbackType target_init_callback; // only for unexported function which need to be located
 };
@@ -68,10 +68,10 @@ struct ShadowHookTarget {
 //
 
 _IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C
-ShadowHookData* ShAllocateShadowHookData();
+LastShadowHookData* ShAllocateShadowHookData();
 
 _IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C
-void ShFreeShadowHookData(_In_ ShadowHookData* sh_data);
+void ShFreeShadowHookData(_In_ LastShadowHookData* sh_data);
 
 _IRQL_requires_max_(PASSIVE_LEVEL) EXTERN_C
 SharedShadowHookPatchData* ShAllocateSharedShaowHookData();
@@ -99,15 +99,15 @@ bool ShInstallHook(_In_ SharedShadowHookPatchData* shared_sh_data,
     _In_ void* address, _In_ ShadowHookTarget *ShadowHookTarget);
 
 _IRQL_requires_min_(DISPATCH_LEVEL) bool ShHandleBreakpoint(
-    _In_ ShadowHookData* sh_data,
+    _In_ LastShadowHookData* sh_data,
     _In_ const SharedShadowHookPatchData* shared_sh_data, _In_ void* guest_ip);
 
 _IRQL_requires_min_(DISPATCH_LEVEL) void ShHandleMonitorTrapFlag(
-    _In_ ShadowHookData* sh_data,
+    _In_ LastShadowHookData* sh_data,
     _In_ const SharedShadowHookPatchData* shared_sh_data, _In_ EptData* ept_data);
 
 _IRQL_requires_min_(DISPATCH_LEVEL) void ShHandleEptViolation(
-    _In_ ShadowHookData* sh_data,
+    _In_ LastShadowHookData* sh_data,
     _In_ const SharedShadowHookPatchData* shared_sh_data, _In_ EptData* ept_data,
     _In_ void* fault_va);
 

@@ -18,6 +18,7 @@
 #include <array>
 #include "shadow_hook.h"
 
+#pragma warning(disable:4505)
 ////////////////////////////////////////////////////////////////////////////////
 //
 // macro utilities
@@ -103,7 +104,7 @@ static VOID DdimonpHandlePspGetContext(ULONG64 a1, ULONG64 a2, ULONG64 a3,
 static VOID DdimonpHandleNtQueryInformationThread(ULONG64 a1, ULONG64 a2,
   ULONG64 a3, ULONG64 a4, ULONG64 a5);
 
-static VOID DdimonpHandleMemAccessKdDebuggerEnabled();
+static VOID DdimonpHandleMemAccessKdDebuggerEnabled(ULONG64 fault_addr, ULONG64 accesser_addr);
 
 static VOID DdimonpHandleExQueueWorkItem(_Inout_ PWORK_QUEUE_ITEM work_item,
   _In_ WORK_QUEUE_TYPE queue_type);
@@ -279,14 +280,14 @@ DdimonInitialization(SharedShadowHookPatchData* shared_sh_data) {
   if (!nt_base) {
     return STATUS_UNSUCCESSFUL;
   }
+  NTSTATUS status = 0;
+  //// Install hooks by enumerating exports of ntoskrnl, but not activate them yet
+  //NTSTATUS status = DdimonpEnumExportedSymbols(reinterpret_cast<ULONG_PTR>(nt_base),
+  //  DdimonpEnumExportedSymbolsCallback,
+  //  NULL);
 
-  // Install hooks by enumerating exports of ntoskrnl, but not activate them yet
-  auto status = DdimonpEnumExportedSymbols(reinterpret_cast<ULONG_PTR>(nt_base),
-    DdimonpEnumExportedSymbolsCallback,
-    shared_sh_data);
-
-  DdimonInstallHookUnexport(NULL);
-  DdimonInstallPatchUnexport(NULL);
+  //DdimonInstallHookUnexport(shared_sh_data);
+  //DdimonInstallPatchUnexport(shared_sh_data);
   DdimonInstallMemMonitor(shared_sh_data);
   if (!NT_SUCCESS(status)) {
     return status;
@@ -507,7 +508,7 @@ _Use_decl_annotations_ static bool DdimonpInitAddressKdTrap(
 
 _Use_decl_annotations_ static bool DdimonpInitAddressKdDebuggerEnabled(
   ULONG64* ptarget_address) {
-  *ptarget_address = 0xFFFFF78000000000 + 0x2d4;
+  *ptarget_address = (ULONG64)UtilPcToFileHeader(KdDebuggerEnabled);
   return true;
 }
 
@@ -536,13 +537,10 @@ _Use_decl_annotations_ static VOID DdimonpHandleNtQueryInformationThread(
   original(a1, a2, a3, a4, a5);
 }
 
-_Use_decl_annotations_ static VOID DdimonpHandleMemAccessKdDebuggerEnabled() {
-
-
-  auto return_addr = _ReturnAddress();
+_Use_decl_annotations_ static VOID DdimonpHandleMemAccessKdDebuggerEnabled(
+  ULONG64 fault_addr, ULONG64 accesser_addr) {
   HYPERPLATFORM_LOG_INFO_SAFE(
-    "%p: DdimonpHandleMemAccessKdDebuggerEnabled)", return_addr);
-
+    "%p: DdimonpHandleMemAccessKdDebuggerEnabled  -> %p", accesser_addr, fault_addr);
 }
 
 // The hook handler for ExQueueWorkItem(). Logs if a WorkerRoutine points to

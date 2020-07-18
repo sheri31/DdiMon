@@ -39,7 +39,7 @@ enum HOOK_TYPE {
 // types
 //
 
-using MEMMONITOR = void(*)(ULONG64);
+using MEMMONITOR = void(*)(ULONG64, ULONG64);
 
 // Copy of a page seen by a guest as a result of memory shadowing
 struct Page {
@@ -185,7 +185,7 @@ static FunctionHookInformation* ShpFindFuncHookInfoByAddress(
   _In_ const SharedShadowHookPatchData* shared_sh_data, _In_ void *address);
 
 static void ShpDisablePageMonitorForRW(
-  _In_ void *address, _In_ EptData* ept_data);
+  _In_ MemBPInformation *info, _In_ EptData* ept_data);
 
 static std::unique_ptr<MemBPInformation> ShpCreateMemMonitorInformation(
   SharedShadowHookPatchData* shared_sh_data,
@@ -195,7 +195,7 @@ static MemBPInformation* ShpFindMemMonInfoByPage(
   const SharedShadowHookPatchData* shared_sh_data, void* address);
 
 static void ShpEnablePageMonitorForRW(
-  void* patch_address, EptData* ept_data);
+  MemBPInformation* info, EptData* ept_data);
 
 #if defined(ALLOC_PRAGMA)
 #pragma alloc_text(PAGE, ShAllocateShadowHookData)
@@ -293,7 +293,7 @@ _Use_decl_annotations_ NTSTATUS ShEnablePageShadowing(
       }
       case MEM_HOOK: {
         MemBPInformation *mem_hook_info = ShpFindMemMonInfoByPage(shared_sh_data, info->va_base_page_hook);
-        ShpDisablePageMonitorForRW((void*)mem_hook_info->mem_address, ept_data);
+        ShpDisablePageMonitorForRW(mem_hook_info, ept_data);
         break;
       }
     }
@@ -313,7 +313,8 @@ _Use_decl_annotations_ void ShVmCallDisablePageShadowing(
       ShpDisablePageShadowingForFuncHook(*ShpFindFuncHookInfoByPage(shared_sh_data, info->va_base_page_hook), ept_data);
       break;
     case MEM_HOOK:
-      ShpDisablePageMonitorForRW(info->va_base_page_hook, ept_data);
+      MemBPInformation *mem_monitor_info= ShpFindMemMonInfoByPage(shared_sh_data, info->va_base_page_hook);
+      ShpEnablePageMonitorForRW(mem_monitor_info, ept_data);
       break;
     }
 
@@ -353,6 +354,7 @@ _Use_decl_annotations_ void ShHandleMonitorTrapFlag(
   EptData* ept_data) {
   NT_VERIFY(ShpIsShadowHookActive(shared_sh_data));
 
+  HYPERPLATFORM_LOG_INFO_SAFE("ShHandleMonitorTrapFlag");
   const auto info = ShpRestoreLastHookInfo(sh_data);
   switch (info->hook_type)
   {
@@ -365,7 +367,8 @@ _Use_decl_annotations_ void ShHandleMonitorTrapFlag(
     }
     case MEM_HOOK:
     {
-      ShpDisablePageMonitorForRW(info->va_base_page_hook, ept_data);
+      MemBPInformation *mem_monitor_info = ShpFindMemMonInfoByPage(shared_sh_data, info->va_base_page_hook);
+      ShpDisablePageMonitorForRW(mem_monitor_info, ept_data);
       break;
     }
 
@@ -378,6 +381,7 @@ _Use_decl_annotations_ void ShHandleMonitorTrapFlag(
 _Use_decl_annotations_ void ShHandleEptViolation(
   LastShadowHookData* sh_data, const SharedShadowHookPatchData* shared_sh_data,
   EptData* ept_data, void* fault_va) {
+  HYPERPLATFORM_LOG_INFO_SAFE("ShHandleEptViolation");
   if (!ShpIsShadowHookActive(shared_sh_data)) {
     return;
   }
@@ -386,7 +390,6 @@ _Use_decl_annotations_ void ShHandleEptViolation(
   if (!info) {
     return;
   }
-
   // EPT violation was caused because a guest tried to read or write to a page
   // where currently set as execute only for protecting a hook. Let a guest
   // read or write a page from a read/write shadow page and run a single
@@ -402,10 +405,14 @@ _Use_decl_annotations_ void ShHandleEptViolation(
     case MEM_HOOK:
     {
       MemBPInformation *mem_monitor_info = ShpFindMemMonInfoByPage(shared_sh_data, info->va_base_page_hook);
-      ShpEnablePageMonitorForRW(info->va_base_page_hook, ept_data);
+      ShpEnablePageMonitorForRW(mem_monitor_info, ept_data);
       ShpSetMonitorTrapFlag(sh_data, true);
       ShpSaveLastHookInfo(sh_data, *info);
-      mem_monitor_info->handler((ULONG64)fault_va);
+      if ((ULONG64)fault_va >= mem_monitor_info->mem_address &&
+        (ULONG64)fault_va <= mem_monitor_info->mem_address + mem_monitor_info->mem_len) {
+        mem_monitor_info->handler((ULONG64)fault_va, UtilVmRead(VmcsField::kGuestRip));
+        
+      }
       break;
     }
 
@@ -719,14 +726,16 @@ _Use_decl_annotations_ static MemHookInformation* ShpFindPageHookInfoByPage(
 }
 
 _Use_decl_annotations_ static void ShpEnablePageMonitorForRW(
-  void* patch_address, EptData* ept_data) {
+  MemBPInformation* info, EptData* ept_data) {
+  const auto pa_base = UtilPaFromVa(PAGE_ALIGN(info->mem_address));
   const auto ept_pt_entry =
-    EptGetEptPtEntry(ept_data, UtilPaFromVa(patch_address));
+    EptGetEptPtEntry(ept_data, pa_base);
 
   // Allow the VMM to redirect read and write access to the address by denying
   // those accesses and handling them on EPT violation
   ept_pt_entry->fields.write_access = true;
   ept_pt_entry->fields.read_access = true;
+  ept_pt_entry->fields.physial_address = UtilPfnFromPa(pa_base);
 
   UtilInveptGlobal();
 }
@@ -781,11 +790,12 @@ _Use_decl_annotations_ static void ShpDisablePageShadowingForFuncHook(
 
 // Stop showing a shadow page
 _Use_decl_annotations_ static void ShpDisablePageMonitorForRW(
-  void *address, EptData* ept_data) {
-  const auto pa_base = UtilPaFromVa(PAGE_ALIGN(address));
+  MemBPInformation *info, EptData* ept_data) {
+  const auto pa_base = UtilPaFromVa(PAGE_ALIGN(info->mem_address));
   const auto ept_pt_entry = EptGetEptPtEntry(ept_data, pa_base);
   ept_pt_entry->fields.write_access = false;
   ept_pt_entry->fields.read_access = false;
+  ept_pt_entry->fields.physial_address = UtilPfnFromPa(pa_base);
 
   UtilInveptGlobal();
 }
@@ -877,10 +887,10 @@ _Use_decl_annotations_ EXTERN_C bool ShInstallMemMonitor(
     shared_sh_data->all_page_hooks.push_back(std::move(new_mem_info));
   }
 
-  shared_sh_data->mem_hooks.push_back(std::move(info));
   HYPERPLATFORM_LOG_DEBUG(
     "MemMon = %p, RW = %p", info->mem_address,
     info->shadow_page_base_for_rw->page + BYTE_OFFSET(info->mem_address));
+  shared_sh_data->mem_hooks.push_back(std::move(info));
   return true;
 }
 

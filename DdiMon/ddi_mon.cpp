@@ -83,28 +83,27 @@ static bool DdimonpEnumExportedSymbolsCallback(
   _In_ PIMAGE_EXPORT_DIRECTORY directory, _In_ ULONG_PTR directory_base,
   _In_ ULONG_PTR directory_end, _In_opt_ void* context);
 
-EXTERN_C static bool ShInstallHookUnexport(void* context);
-
-EXTERN_C static bool ShInstallPatchUnExport(void* context);
-
 static std::array<char, 5> DdimonpTagToString(_In_ ULONG tag_value);
 
 template <typename T>
 static T DdimonpFindOrignal(_In_ T handler);
 
-static bool DdimonpInitKdTrapAddress(ULONG64* ptarget_address);
+static bool DdimonpInitAddressKdTrap(ULONG64* ptarget_address);
+static bool DdimonpInitAddressKdDebuggerEnabled(ULONG64* ptarget_address);
+static bool DdimonpInitAddressNtSetSystemTime(ULONG64* ptarget_address);
 
-static bool DdimonpInitNtQueryInformationThreadAddress(
+static bool DdimonpInitAddressNtQueryInformationThread(
   ULONG64* ptarget_address);
 
-static bool DdimonpInitPspGetContextAddress(ULONG64* ptarget_address);
+static bool DdimonpInitAddressPspGetContext(ULONG64* ptarget_address);
 
 static VOID DdimonpHandlePspGetContext(ULONG64 a1, ULONG64 a2, ULONG64 a3,
   ULONG64 a4, ULONG64 a5);
 
 static VOID DdimonpHandleNtQueryInformationThread(ULONG64 a1, ULONG64 a2,
-  ULONG64 a3, ULONG64 a4,
-  ULONG64 a5);
+  ULONG64 a3, ULONG64 a4, ULONG64 a5);
+
+static VOID DdimonpHandleMemAccessKdDebuggerEnabled();
 
 static VOID DdimonpHandleExQueueWorkItem(_Inout_ PWORK_QUEUE_ITEM work_item,
   _In_ WORK_QUEUE_TYPE queue_type);
@@ -122,6 +121,12 @@ static NTSTATUS DdimonpHandleNtQuerySystemInformation(
   _In_ SystemInformationClass SystemInformationClass,
   _Inout_ PVOID SystemInformation, _In_ ULONG SystemInformationLength,
   _Out_opt_ PULONG ReturnLength);
+
+EXTERN_C static bool DdimonInstallHookUnexport(void* context);
+
+EXTERN_C static bool DdimonInstallPatchUnexport(void* context);
+
+EXTERN_C static bool DdimonInstallMemMonitor(void* context);
 
 #if defined(ALLOC_PRAGMA)
 #pragma alloc_text(PAGE, DdimonInitialization)
@@ -193,22 +198,22 @@ static ShadowHookTarget g_ddimonp_hook_targets[] = {
         DdimonpHandleNtQuerySystemInformation,
         nullptr,
     },
-    //{
-    //    UNEXPORT_FUNCTION,
-    //    RTL_CONSTANT_STRING(L"NTQUERYINFORMATIONTHREAD"),
-    //    0x697050, //NtQueryInformationThread
-    //    DdimonpInitNtQueryInformationThreadAddress,
-    //    DdimonpHandleNtQueryInformationThread,
-    //    nullptr,
-    //},
-    //{
-    //    UNEXPORT_FUNCTION,
-    //    RTL_CONSTANT_STRING(L"PSPGETCONTEXT"),
-    //    0x6952B8, //PspGetContext
-    //    DdimonpInitPspGetContextAddress,
-    //    DdimonpHandlePspGetContext,
-    //    nullptr,
-    //},
+    {
+        UNEXPORT_FUNCTION,
+        RTL_CONSTANT_STRING(L"NTQUERYINFORMATIONTHREAD"),
+        0x697050, //NtQueryInformationThread
+        DdimonpInitAddressNtQueryInformationThread,
+        DdimonpHandleNtQueryInformationThread,
+        nullptr,
+    },
+    {
+        UNEXPORT_FUNCTION,
+        RTL_CONSTANT_STRING(L"PSPGETCONTEXT"),
+        0x6952B8, //PspGetContext
+        DdimonpInitAddressPspGetContext,
+        DdimonpHandlePspGetContext,
+        nullptr,
+    },
 };
 
 // This global array aims to patch inside function 
@@ -231,9 +236,35 @@ static ShadowPatchTarget g_ddimonp_patch_targets[] = {
         NULL,
         6,
         "\x83\x3d\xc1\xb7\x36\x00\x00\x00",
-        DdimonpInitKdTrapAddress
+        DdimonpInitAddressKdTrap
     },
+  /*{
+      UNEXPORT_FUNCTION,
+      RTL_CONSTANT_STRING(L"NtSetSystemTime"),
+      NULL,
+      6,
+      "\xb8\x33\x02\x00\x00\xc3",
+      DdimonpInitAddressNtSetSystemTime
+  },*/
 };
+
+static ShadowMemMonitorTarget g_ddimonp_mem_monitor_targets[] = {
+    {
+        NULL,
+        1,
+        DdimonpInitAddressKdDebuggerEnabled,
+        DdimonpHandleMemAccessKdDebuggerEnabled,
+    },
+  /*{
+      UNEXPORT_FUNCTION,
+      RTL_CONSTANT_STRING(L"NtSetSystemTime"),
+      NULL,
+      6,
+      "\xb8\x33\x02\x00\x00\xc3",
+      DdimonpInitAddressNtSetSystemTime
+  },*/
+};
+
 
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -254,10 +285,9 @@ DdimonInitialization(SharedShadowHookPatchData* shared_sh_data) {
     DdimonpEnumExportedSymbolsCallback,
     shared_sh_data);
 
-  ShInstallHookUnexport(shared_sh_data);
-
-  ShInstallPatchUnExport(shared_sh_data);
-
+  DdimonInstallHookUnexport(NULL);
+  DdimonInstallPatchUnexport(NULL);
+  DdimonInstallMemMonitor(shared_sh_data);
   if (!NT_SUCCESS(status)) {
     return status;
   }
@@ -359,6 +389,7 @@ _Use_decl_annotations_ EXTERN_C static bool DdimonpEnumExportedSymbolsCallback(
   UNICODE_STRING name_u = {};
   RtlInitUnicodeString(&name_u, name);
 
+
   for (auto& target : g_ddimonp_hook_targets) {
     // only process export function
     if (target.function_type == UNEXPORT_FUNCTION) {
@@ -370,6 +401,7 @@ _Use_decl_annotations_ EXTERN_C static bool DdimonpEnumExportedSymbolsCallback(
       continue;
     }
 
+    target.target_address = export_address;
     // Yes, install a hook to the export
     if (!ShInstallHook(reinterpret_cast<SharedShadowHookPatchData*>(context),
       reinterpret_cast<void*>(export_address), &target)) {
@@ -383,67 +415,6 @@ _Use_decl_annotations_ EXTERN_C static bool DdimonpEnumExportedSymbolsCallback(
   return true;
 }
 
-_Use_decl_annotations_ EXTERN_C static bool ShInstallPatchUnExport(
-  void* context) {
-  PAGED_CODE();
-
-  if (!context) {
-    return false;
-  }
-
-  for (auto& target : g_ddimonp_patch_targets) {
-    // only process unexport function
-    if (target.function_type == EXPORT_FUNCTION) {
-      continue;
-    }
-
-    // call target address callback for initization
-    target.target_init_callback(&target.target_address);
-
-    // Yes, install a hook to the export
-    if (!ShInstallPatch(reinterpret_cast<SharedShadowHookPatchData*>(context),
-      reinterpret_cast<void*>(target.target_address),
-      &target)) {
-      // This is an error which should not happen
-      DdimonpFreeAllocatedTrampolineRegions();
-      return false;
-    }
-    HYPERPLATFORM_LOG_INFO("Hook has been installed at %016Ix",
-      target.target_address);
-  }
-  return true;
-}
-
-_Use_decl_annotations_ EXTERN_C static bool ShInstallHookUnexport(
-  void* context) {
-  PAGED_CODE();
-
-  if (!context) {
-    return false;
-  }
-
-  for (auto& target : g_ddimonp_hook_targets) {
-    // only process unexport function
-    if (target.function_type == EXPORT_FUNCTION) {
-      continue;
-    }
-
-    // call target address callback for initization
-    target.target_init_callback(&target.target_address);
-
-    // Yes, install a hook to the export
-    if (!ShInstallHook(reinterpret_cast<SharedShadowHookPatchData*>(context),
-      reinterpret_cast<void*>(target.target_address),
-      &target)) {
-      // This is an error which should not happen
-      DdimonpFreeAllocatedTrampolineRegions();
-      return false;
-    }
-    HYPERPLATFORM_LOG_INFO("Hook has been installed at %016Ix",
-      target.target_address);
-  }
-  return true;
-}
 
 // Converts a pool tag in integer to a printable string
 _Use_decl_annotations_ static std::array<char, 5> DdimonpTagToString(
@@ -512,11 +483,11 @@ _Use_decl_annotations_ static VOID DdimonpHandleExFreePoolWithTag(PVOID p,
     return_addr, p, DdimonpTagToString(tag).data());
 }
 
-//_Use_decl_annotations_ static bool DdimonpInitPspGetContextAddress(
-//  ULONG64* ptarget_address) {
-//  *ptarget_address = (ULONG64)UtilPcToFileHeader(KdDebuggerEnabled) + 0x6952B8;
-//  return true;
-//}
+_Use_decl_annotations_ static bool DdimonpInitAddressPspGetContext(
+  ULONG64* ptarget_address) {
+  *ptarget_address = (ULONG64)UtilPcToFileHeader(KdDebuggerEnabled) + 0x6952B8;
+  return true;
+}
 
 _Use_decl_annotations_ static VOID DdimonpHandlePspGetContext(
   ULONG64 a1, ULONG64 a2, ULONG64 a3, ULONG64 a4, ULONG64 a5) {
@@ -528,17 +499,30 @@ _Use_decl_annotations_ static VOID DdimonpHandlePspGetContext(
   original(a1, a2, a3, a4, a5);
 }
 
-_Use_decl_annotations_ static bool DdimonpInitKdTrapAddress(
+_Use_decl_annotations_ static bool DdimonpInitAddressKdTrap(
   ULONG64* ptarget_address) {
   *ptarget_address = (ULONG64)UtilPcToFileHeader(KdDebuggerEnabled) + 0xFEBB8;
   return true;
 }
 
-//_Use_decl_annotations_ static bool DdimonpInitNtQueryInformationThreadAddress(
+_Use_decl_annotations_ static bool DdimonpInitAddressKdDebuggerEnabled(
+  ULONG64* ptarget_address) {
+  *ptarget_address = 0xFFFFF78000000000 + 0x2d4;
+  return true;
+}
+
+//
+//_Use_decl_annotations_ static bool DdimonpInitAddressNtSetSystemTime(
 //  ULONG64* ptarget_address) {
-//  *ptarget_address = (ULONG64)UtilPcToFileHeader(KdDebuggerEnabled) + 0x697050;
+//  *ptarget_address = (ULONG64)UtilPcToFileHeader(KdDebuggerEnabled) + 0x90C700;
 //  return true;
 //}
+
+_Use_decl_annotations_ static bool DdimonpInitAddressNtQueryInformationThread(
+  ULONG64* ptarget_address) {
+  *ptarget_address = (ULONG64)UtilPcToFileHeader(KdDebuggerEnabled) + 0x697050;
+  return true;
+}
 
 _Use_decl_annotations_ static VOID DdimonpHandleNtQueryInformationThread(
   ULONG64 a1, ULONG64 a2, ULONG64 a3, ULONG64 a4, ULONG64 a5) {
@@ -547,9 +531,18 @@ _Use_decl_annotations_ static VOID DdimonpHandleNtQueryInformationThread(
 
   auto return_addr = _ReturnAddress();
   DBG_UNREFERENCED_LOCAL_VARIABLE(return_addr);
-  /*HYPERPLATFORM_LOG_INFO_SAFE(
-      "%p: DdimonpHandleNtQueryInformationThread", return_addr);*/
+  HYPERPLATFORM_LOG_INFO_SAFE(
+      "%p: DdimonpHandleNtQueryInformationThread", return_addr);
   original(a1, a2, a3, a4, a5);
+}
+
+_Use_decl_annotations_ static VOID DdimonpHandleMemAccessKdDebuggerEnabled() {
+
+
+  auto return_addr = _ReturnAddress();
+  HYPERPLATFORM_LOG_INFO_SAFE(
+    "%p: DdimonpHandleMemAccessKdDebuggerEnabled)", return_addr);
+
 }
 
 // The hook handler for ExQueueWorkItem(). Logs if a WorkerRoutine points to
@@ -628,4 +621,86 @@ _Use_decl_annotations_ static NTSTATUS DdimonpHandleNtQuerySystemInformation(
     }
   }
   return result;
+}
+
+
+
+_Use_decl_annotations_ EXTERN_C static bool DdimonInstallMemMonitor(
+  void* context) {
+  PAGED_CODE();
+  if (!context) {
+    return false;
+  }
+
+  for (auto& target : g_ddimonp_mem_monitor_targets) {
+
+    // call target address callback for initization
+    target.target_init_callback(&target.target_address);
+    if (!ShInstallMemMonitor((SharedShadowHookPatchData*)context, &target)) {
+      return false;
+    }
+
+    HYPERPLATFORM_LOG_INFO("Mem Monitor has been installed at %016Ix",
+      target.target_address);
+  }
+  return true;
+}
+
+_Use_decl_annotations_ EXTERN_C static bool DdimonInstallPatchUnexport(
+  void* context) {
+  PAGED_CODE();
+  if (!context) {
+    return false;
+  }
+
+  for (auto& target : g_ddimonp_patch_targets) {
+    // only process unexport function
+    if (target.function_type == EXPORT_FUNCTION) {
+      continue;
+    }
+
+    // call target address callback for initization
+    target.target_init_callback(&target.target_address);
+
+    // Yes, install a hook to the export
+    if (!ShInstallPatch(reinterpret_cast<SharedShadowHookPatchData*>(context),
+      reinterpret_cast<void*>(target.target_address),
+      &target)) {
+      return false;
+    }
+    HYPERPLATFORM_LOG_INFO("Hook has been installed at %016Ix",
+      target.target_address);
+  }
+  return true;
+}
+
+_Use_decl_annotations_ EXTERN_C static bool DdimonInstallHookUnexport(
+  void* context) {
+  PAGED_CODE();
+
+  if (!context) {
+    return false;
+  }
+
+  for (auto& target : g_ddimonp_hook_targets) {
+    // only process unexport function
+    if (target.function_type == EXPORT_FUNCTION) {
+      continue;
+    }
+
+    // call target address callback for initization
+    target.target_init_callback(&target.target_address);
+
+    // Yes, install a hook to the export
+    if (!ShInstallHook(reinterpret_cast<SharedShadowHookPatchData*>(context),
+      reinterpret_cast<void*>(target.target_address),
+      &target)) {
+      // This is an error which should not happen
+      DdimonpFreeAllocatedTrampolineRegions();
+      return false;
+    }
+    HYPERPLATFORM_LOG_INFO("Hook has been installed at %016Ix",
+      target.target_address);
+  }
+  return true;
 }

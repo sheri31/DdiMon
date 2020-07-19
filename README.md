@@ -1,3 +1,11 @@
+Addition
+-------------
+1.Support patch inside system functions(not hook the function header)
+ - like the export function hook DdiMon proved, Patch modifies the page for exec, save the original page for read and write
+2.Support hook and patch unexport functions
+3.Support memory monitor for read\write access
+
+
 DdiMon
 =======
 

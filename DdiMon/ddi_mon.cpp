@@ -253,17 +253,10 @@ static ShadowMemMonitorTarget g_ddimonp_mem_monitor_targets[] = {
     {
         NULL,
         1,
+        ACCESS_READ,
         DdimonpInitAddressKdDebuggerEnabled,
         DdimonpHandleMemAccessKdDebuggerEnabled,
     },
-  /*{
-      UNEXPORT_FUNCTION,
-      RTL_CONSTANT_STRING(L"NtSetSystemTime"),
-      NULL,
-      6,
-      "\xb8\x33\x02\x00\x00\xc3",
-      DdimonpInitAddressNtSetSystemTime
-  },*/
 };
 
 
@@ -508,7 +501,8 @@ _Use_decl_annotations_ static bool DdimonpInitAddressKdTrap(
 
 _Use_decl_annotations_ static bool DdimonpInitAddressKdDebuggerEnabled(
   ULONG64* ptarget_address) {
-  *ptarget_address = (ULONG64)UtilPcToFileHeader(KdDebuggerEnabled);
+  *ptarget_address = 0xFFFFF78000000000 + 0x2d4;
+  //*ptarget_address = (ULONG64)UtilPcToFileHeader(KdDebuggerEnabled);
   return true;
 }
 

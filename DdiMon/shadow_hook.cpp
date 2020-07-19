@@ -51,6 +51,7 @@ struct Page {
 struct MemBPInformation {
   ULONG64 mem_address;
   ULONG64 mem_len;
+  ACCESS_TYPE access_type;
   MEMMONITOR handler;
   std::shared_ptr<Page> shadow_page_base_for_rw;
   ULONG64 pa_base_for_rw;
@@ -354,7 +355,7 @@ _Use_decl_annotations_ void ShHandleMonitorTrapFlag(
   EptData* ept_data) {
   NT_VERIFY(ShpIsShadowHookActive(shared_sh_data));
 
-  HYPERPLATFORM_LOG_INFO_SAFE("ShHandleMonitorTrapFlag");
+  //HYPERPLATFORM_LOG_INFO_SAFE("ShHandleMonitorTrapFlag");
   const auto info = ShpRestoreLastHookInfo(sh_data);
   switch (info->hook_type)
   {
@@ -381,7 +382,7 @@ _Use_decl_annotations_ void ShHandleMonitorTrapFlag(
 _Use_decl_annotations_ void ShHandleEptViolation(
   LastShadowHookData* sh_data, const SharedShadowHookPatchData* shared_sh_data,
   EptData* ept_data, void* fault_va) {
-  HYPERPLATFORM_LOG_INFO_SAFE("ShHandleEptViolation");
+  //HYPERPLATFORM_LOG_INFO_SAFE("ShHandleEptViolation");
   if (!ShpIsShadowHookActive(shared_sh_data)) {
     return;
   }
@@ -411,7 +412,6 @@ _Use_decl_annotations_ void ShHandleEptViolation(
       if ((ULONG64)fault_va >= mem_monitor_info->mem_address &&
         (ULONG64)fault_va <= mem_monitor_info->mem_address + mem_monitor_info->mem_len) {
         mem_monitor_info->handler((ULONG64)fault_va, UtilVmRead(VmcsField::kGuestRip));
-        
       }
       break;
     }
@@ -793,8 +793,15 @@ _Use_decl_annotations_ static void ShpDisablePageMonitorForRW(
   MemBPInformation *info, EptData* ept_data) {
   const auto pa_base = UtilPaFromVa(PAGE_ALIGN(info->mem_address));
   const auto ept_pt_entry = EptGetEptPtEntry(ept_data, pa_base);
-  ept_pt_entry->fields.write_access = false;
-  ept_pt_entry->fields.read_access = false;
+
+  if (info->access_type & ACCESS_READ) {
+    ept_pt_entry->fields.read_access = false;
+    ept_pt_entry->fields.write_access = false;
+  }
+  else {
+    ept_pt_entry->fields.read_access = true;
+    ept_pt_entry->fields.write_access = !(info->access_type & ACCESS_WRITE);
+  }
   ept_pt_entry->fields.physial_address = UtilPfnFromPa(pa_base);
 
   UtilInveptGlobal();
@@ -924,6 +931,7 @@ ShpCreateMemMonitorInformation(SharedShadowHookPatchData* shared_sh_data,
   info->mem_address = target->target_address;
   info->pa_base_for_rw = UtilPaFromVa(info->shadow_page_base_for_rw->page);
   info->mem_len = target->len;
+  info->access_type = target->access_type;
   info->handler = (MEMMONITOR)target->handler;
 
   return info;

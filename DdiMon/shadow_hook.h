@@ -25,6 +25,12 @@ enum HOOKED_FUNC_TYPE {
   EXPORT_FUNCTION,
 };
 
+enum ACCESS_TYPE {
+  ACCESS_READ = 1,
+  ACCESS_WRITE = 2,
+  //ACCESS_EXECUTE = 4,
+};
+
 ////////////////////////////////////////////////////////////////////////////////
 //
 // types
@@ -65,6 +71,7 @@ struct ShadowHookTarget {
 struct ShadowMemMonitorTarget {
   ULONG64 target_address;  //An unexported function address to hook
   ULONG64 len;
+  ACCESS_TYPE access_type;  //1:read 2:write 4:exec
   TargetInitCallback target_init_callback; // only for unexported function which need to be located
   void *handler;               // An address of a hook handler
 };
